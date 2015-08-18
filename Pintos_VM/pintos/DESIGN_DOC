@@ -1,0 +1,291 @@
+       		    +---------------------------+
+		    | CSE 521                   |
+		    | PROJECT 2: VIRTUAL MEMORY	|
+		    | DESIGN DOCUMENT           |
+		    +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Satya Chandu Dheeraj Balakavi <satyacha@buffalo.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+1. A few sections of the project have been left unimplemented by me, one of which is memory mapping. A total of 14 of 34 VM test cases are passing, and of the non-VM test cases which were all passing in the vanilla copy of the pintos.tar provided by the professor, a few of them (2 to be exact) are failing. As per professor, that's alright and so I haven't spent any time debugging them.
+
+2. While running make grade on my source package, the test cases pt-bad-read and page-merge-par are failing to execute and bochs is getting hung up with no further progress for these test cases. In such a case, please kill the execution of these test cases, and proceed further by using make grade again. I have spent a lot of time trying to debug this, but I seem to not find a way out.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+1. http://web.stanford.edu/class/cs140/cgi-bin/section/10sp-proj3.pdf
+
+2. http://csl.skku.edu/uploads/CSE3008F09/project3.pdf
+
+3. https://www.youtube.com/watch?v=3akTtCu_F_k (Chris Terman's lecture - "MIT 6.004 L17: Virtual Memory")
+
+
+
+			PAGE TABLE MANAGEMENT
+			=====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Supplementary page table:
+-------------------------
+struct page {
+	...
+	...
+	struct thread *frame_holder_thread;
+	// file related data
+	struct file *file;
+	uint32_t read_bytes;
+	off_t file_ofs;bool writable;
+	struct hash_elem spt_hash_elem;
+	// swap related data
+	block_sector_t swap_sector;
+	int swap_flag;
+};
+
+Added data members,
+	struct file *file;
+	uint32_t read_bytes;
+	off_t file_ofs;bool writable;
+	struct hash_elem spt_hash_elem;
+to hold file related information of a page into the supplmentary page table so as to allow for them to be retrieved and mapped while installing a page into physical memory.
+The base code that was supplied to us didn't require these values to be stored anywhere as a page was installed as and when free memory slots were available. To accomodate for demand paging, these values are first loaded into the supplementary page table and when we encounter a page fault, these details are then used to install the page into physical memory.
+
+Added data members,
+	block_sector_t swap_sector;
+	int swap_flag;
+to hold swapping related information. swap_sector is the data member that maps the available swap sector to the page requesting it. swap_flag is simple 0/1 flag used to indicate that swapping has taken place for that page.
+
+Frame Table:
+------------
+struct list frame_list;
+struct lock ftable_lock;
+/* A physical frame. */
+struct frame {
+	...
+	struct list_elem frame_list_elem;
+};
+The frames_list is used to hold the list of frames, while the frame_list_elem is the list_elem of the frame structure. The ftable_lock is used for synchronization.
+
+Thread:
+-------
+
+struct thread {
+...
+#ifdef USERPROG
+	/* Owned by userprog/process.c. */
+	uint32_t *pagedir; /* Page directory. */
+#endif
+...
+struct hash suppl_page_table;
+...
+
+};
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+
+Instead of loading the page directly into the kernal virtual memory (from the load_segment method of the process.c), I am keeping a copy of the file information in the supplementary page table. The supplementary page table would contain all the information for it to load a page into memory; these include, File structure, file offset, file read bytes and the boolean writale flag.
+
+When a page fault is encountered, we check if the address is within it's allowable limits and then try to page-in the file into memory. The supplementary page table is here used to retrieve the file information, and load the same into the memory. If a frame cannot be allocated to the page, we try to evict a page and provide the freed up frame to the requesting page. For this purpose, I have used LRU Clock Algorithm.
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+I have added a new data member to the page structure that is used to identify the thread which is holder of a paricular frame, and the thread struct member contains a pointer to the pagedir structure. So, whenever I evict a page, by LRU clock algorithm, I access the pagedir structure and check the accessed and dirty bits to decide upon the swapping.
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+I am using a frame table lock (ftable_lock) to avoid race conditions while multiple processes try to access a new frame.
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+My implementation uses a Hash table for Supplementary page table (SPT) and a list for frame table. I defined the SPT as a hash table because accessing the page related data using the fault address is faster and easier. I defined Frame table as a list because the LRU clock algorithm I implemented required me to iterate across the list of frames to identify the frame that is to be evicted. List data structure does the job quickly here.
+
+		       PAGING TO AND FROM DISK
+		       =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Frame Table:
+------------
+struct list frame_list;
+struct lock ftable_lock;
+/* A physical frame. */
+struct frame {
+	...
+	struct list_elem frame_list_elem;
+};
+The frames_list is used to hold the list of frames, while the frame_list_elem is the list_elem of the frame structure. The ftable_lock is used for synchronization.
+
+Swap Device:
+------------
+
+/* The swap device. */
+static struct block *swap_device;
+
+/* Used swap pages. */
+static struct bitmap *swap_bitmap;
+
+/* Protects swap_bitmap. */
+static struct lock swap_lock;
+
+The data structures that were supplied with the pintos.tar have been used with requirement for no additional ones.
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+I have used LRU clock algorithm for frame eviction. The implementation of it is as follows:
+
+1. we make use of the PTE's accessed bit and dirty bit:
+ 	on any read or write to a page  ==> accessed bit = 1;
+ 	on any write ==> dirty bit = 1;
+
+2. We navigate through the pages in a circular order.. i.e., if we hit the end of the frame list,
+ we circle back to the start and continue our processing.
+
+3. If the accessed bit is 'accessed', turn it to 'not accessed', skip the page and proceed to look-up the next one in the list
+
+4. If the accessed bit is 'not accessed', we can proceed with our page replacement
+
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+A pointer to the struct page data member of the frame is used to keep track of the page that is currently occupying the frame. If current process frame that is to be freed is in the frames list, I am removing it from list, clearing the page and freeing up the memory by calling pagedir_clear_page and palloc_free_page.
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+The following conditions have been checked and implemented by me when a page fault is encountered:
+1. if the fault address is less than (PHYS_BASE - STACK_MAX), we page in the particular page.
+2. however, if the fault address is greater than 32 bytes from esp, we perform stack growth.
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+I have used locks where necessary to prevent any race conditions and ensure synchronization.
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+Inorder to keep track of the process, the page that is being accessed and the frame is question, I have used pointers for each other in the data members of page, frame and thread. This way, I keep track of the processes that are holding the frames and ensure no other process evicts another processess frame.
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+I am panicking the kernel where and when an access to invalid address is triggered.
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+I am using global locks for frame table, swap table and filesystem.
+
+			 MEMORY MAPPED FILES
+			 ===================
+
+<I have not implemented Memory Mapping.>
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+The project was, from my point of view, a bit on the harder side compared to the last project. I had to spend a lot of time reading and trying to get my head around the concepts such as demand paging, swapping, page eviction etc. For the initial few days of the project, I had no clue where to start. But the stanford pintos document and our project document left a few breadcrumbs for us to follow, and finally I started gathering pace. The time however seemed to be a constraint, especially with me taking other heavy courses this semester.
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+Page eviction and swapping was fun. Before the implementaion I had to read a lot of stuff, including various LRU implementations and so, yes, this part gave me greater insight into OS concepts. 
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+A lecture class dedicated to introduction to the project would be quite helpul to the future students.
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+None. They're doing a great job just the way they are.
+
+>> Any other comments?
+None.

@@ -1,0 +1,14 @@
+University at Buffalo
+CSE 521 - OS (Fall 2014)
+-------------------------
+Project 2 - VM
+---------------
+
+Read me document:
+-----------------
+This document is written to highlight a couple of points to the TAs evaluating the project to properly run the test cases. The same has been highlighted in the design document as well.
+
+1. A few sections of the project have been left unimplemented by me, one of which is memory mapping. A total of 14 of 34 VM test cases are passing (screenshot attached with the tar file), and of the non-VM test cases which were all passing in the vanilla copy of the pintos.tar provided by the professor, a few of them (2 to be exact) are failing. As per professor, that's alright and so I haven't spent any time debugging them.
+
+2. While running make grade on my source package, the test cases "pt-bad-read" and "page-merge-par" are failing to execute and bochs is getting hung up with no further progress for these test cases. In such a case, please kill the execution of these test cases, and proceed further by using make grade again and skipping the test cases. I have spent a lot of time trying to debug this, but I seem to not find a way out. Apologies for any inconvinence caused.
+
